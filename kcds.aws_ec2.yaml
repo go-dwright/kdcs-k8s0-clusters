@@ -1,0 +1,8 @@
+plugin: amazon.aws.aws_ec2
+regions:
+  - eu-west-2
+filters:
+  tag:OwnerEmail: "{{ your_email }}" # not a template
+strict_permissions: False
+groups:
+  controller: "true"

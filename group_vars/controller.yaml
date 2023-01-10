@@ -1,0 +1,2 @@
+control-plane: true
+worker: false

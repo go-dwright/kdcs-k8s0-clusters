@@ -1,0 +1,153 @@
+## wait for them to be ready
+- hosts: all
+  gather_facts: false
+  tasks: 
+  - name: Wait for ssh to be ready
+    wait_for_connection:
+      timeout: 10
+
+## now start config
+- hosts: all
+  gather_facts: true      
+  tasks: 
+  - name: install required packages
+    apt:
+      name: "{{ item }}"
+      update_cache: yes
+    become: true
+    with_items:
+    - apt-transport-https 
+    - curl
+
+  - name: Add Docker GPG apt Key
+    become: true
+    apt_key:
+      url: https://download.docker.com/linux/ubuntu/gpg
+      state: present
+
+  - name: Add Docker Repository
+    become: true
+    apt_repository:
+      repo: deb https://download.docker.com/linux/ubuntu focal stable
+      state: present
+
+  - name: Update apt and install containerd.io
+    become: true
+    apt:
+      name: containerd.io
+      state: latest
+      update_cache: true
+
+  - name: Update apt and install docker-ce
+    become: true
+    apt:
+      name: docker-ce
+      state: latest
+
+  # - name: create docker config
+  #   become: true
+  #   copy:
+  #     content: |
+  #       {
+  #         "exec-opts": ["native.cgroupdriver=systemd"]
+  #       }
+  #     dest: /etc/docker/daemon.json
+  #     owner: root
+  #     group: root
+
+  - name: created containerd config
+    become: true
+    shell: containerd config default > /etc/containerd/config.toml
+
+  - name: update systemdcgroup
+    become: true
+    ansible.builtin.lineinfile:
+      path: /etc/containerd/config.toml
+      regexp: "           SystemdCgroup.*"
+      line: "           SystemdCgroup = true"
+
+  - name: start/enable containerd
+    ansible.builtin.service:
+      name: "containerd"
+      state: restarted
+      enabled: true
+    failed_when: false
+ 
+  - name: add kubernetes signing key
+    become: true
+    ansible.builtin.apt_key:
+      url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+      state: present
+
+  - name: add kubernetes apt repo
+    become: true
+    ansible.builtin.apt_repository:
+      repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+      filename: kubernetes
+      state: present
+
+  - name: install kubernetes components
+    apt:
+      name: "{{ item }}"
+      update_cache: yes
+    become: true
+    with_items:
+    - kubernetes-cni=0.8.7-00 
+    - kubelet={{ kubernetes_version }}-00 
+    - kubectl={{ kubernetes_version }}-00 
+    - kubeadm={{ kubernetes_version }}-00
+
+- hosts: controller
+  gather_facts: false
+  tasks:
+  - name: restart containerd using direct call because ansible is stupid
+    shell: sudo systemctl restart containerd && sleep 3
+
+  - name: kubeadm init cluster 
+    become: true
+    command: kubeadm init --ignore-preflight-errors=NumCPU,Mem --pod-network-cidr 192.168.0.0/16 --apiserver-cert-extra-sans {{ ansible_host }} --kubernetes-version {{ kubernetes_version }}
+
+  - name: ensure unpriv user can use kubectl
+    shell: |
+      mkdir -p $HOME/.kube
+      sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+      sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+  - name: kubectl completion and aliasing
+    shell: | 
+      echo "source <(kubectl completion bash)" >> ~/.bashrc 
+      echo "alias k=kubectl" >> ~/.bashrc 
+      echo "complete -F __start_kubectl k" >> ~/.bashrc 
+
+  - name: Wait for kube apiserver to start listening
+    ansible.builtin.wait_for:
+      port: 6443
+      delay: 5
+
+  - name: install cni
+    command: kubectl apply -f https://docs.projectcalico.org/manifests/calico.yaml
+
+  - name: update kubectl config file to use external ip
+    become: true
+    ansible.builtin.lineinfile:
+      path: /etc/kubernetes/admin.conf
+      regexp: 'server:'
+      line: "    server: https://{{ ansible_host }}:6443"
+
+  - name: fetch the kubectl config file
+    become: true
+    ansible.builtin.fetch:
+      src: /etc/kubernetes/admin.conf
+      dest: /Users/damonwright/ansible-aws-k8s/configs/{{ ansible_hostname }}.yaml
+      flat: yes
+
+- hosts: controller
+  gather_facts: true
+  tasks:
+  - name: remove NoSchedule taints (node-role.kubernetes.io/control-plane)
+    shell: kubectl taint node {{ ansible_hostname }} node-role.kubernetes.io/control-plane-
+    failed_when: false
+
+  - name: remove NoSchedule taints (node-role.kubernetes.io/master)
+    shell: kubectl taint node {{ ansible_hostname }} node-role.kubernetes.io/master-
+    failed_when: false

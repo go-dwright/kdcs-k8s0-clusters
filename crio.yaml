@@ -1,0 +1,55 @@
+  
+
+  - name: add cri-o versioned signing key
+    become: true
+    ansible.builtin.apt_key:
+      url: "https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:{{ crio_version }}/{{ os }}/Release.key"
+      state: present
+
+  - name: add cri-o stable signing key
+    become: true
+    ansible.builtin.apt_key:
+      url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ os }}/Release.key"
+      state: present 
+  
+  - name: add cri-o apt repo (1)
+    become: true
+    ansible.builtin.apt_repository:
+      repo: "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/{{ os }}/ /"
+      filename: devel:kubic:libcontainers:stable.list
+      state: present
+
+  - name: add cri-o apt repo (2)
+    become: true
+    ansible.builtin.apt_repository:
+      repo: "deb http://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ crio_version }}/{{ os }}/ /"
+      filename: devel:kubic:libcontainers:stable:cri-o:{{ crio_version }}.list
+      state: present
+  
+  - name: install crio components
+    become: true
+    apt:
+      name: "{{ item }}"
+      update_cache: yes
+    with_items:
+    - cri-o
+    - cri-o-runc
+    - cri-tools
+
+  - name: create crio config
+    become: true
+    copy:
+      content: |
+        [crio.runtime]
+        conmon_cgroup = "pod"
+        cgroup_manager = "cgroupfs"
+      dest: /etc/crio/crio.conf.d/02-cgroup-manager.conf
+      owner: root
+      group: root
+    
+  - name: start/enable crio
+    become: true
+    ansible.builtin.service:
+      name: "crio"
+      state: started
+      enabled: true
